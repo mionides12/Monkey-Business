@@ -1,0 +1,198 @@
+---
+title: "focal_data"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(googlesheets4)
+library(DescTools)
+library(RPostgres)
+library(DBI)
+library(hms)
+library(rlist)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document
+
+```{r}
+focal_data_2018 <- read_csv('tbls/focal_data_2018.csv')
+focal_data_2019 <- read_csv('tbls/focal_data_2019.csv')
+focal_data_2020 <- read_csv('tbls/focal_data_2020.csv')
+focal_data_2021 <- read_csv('tbls/focal_data_2021.csv')
+focal_data_2022 <- read_csv('tbls/focal_data_2022.csv')
+focal_data_2023 <- read_csv('tbls/focal_data_2023.csv')
+```
+
+```{r}
+focal_data_2021 <- mutate(focal_data_2021,"Against"=as.character(Against))
+focal_data_2018 <- mutate(focal_data_2018,"Group"="T")
+```
+
+```{r}
+table(focal_data_2018$Type)
+```
+```{r}
+files <- list.files(path="tbls/",pattern = "*Abort Data*.csv",full.names=TRUE)
+files
+abort_scan_2018 <- files[1] |> read_csv()
+abort_scan_2019 <- files[2] |> read_csv()
+abort_scan_2020 <- files[3] |> read_csv()
+abort_scan_2021 <- files[4] |> read_csv()
+abort_scan_2022 <- files[5] |> read_csv()
+abort_scan_2023 <- files[6] |> read_csv()
+abort_scan_2018 <- mutate(abort_scan_2018,Group="T")
+abort_scan_2019 <- mutate(abort_scan_2019,Group="T")
+abort_scan_2020 <- mutate(abort_scan_2018,Group="T")
+abort_scans <- bind_rows(abort_scan_2018,abort_scan_2019,abort_scan_2020,abort_scan_2021,abort_scan_2022,abort_scan_2023)
+abort_scans |> colnames()
+focal_data_2020 |> colnames()
+```
+
+```{r}
+abort_scans <- abort_scans |> mutate(abort_scans, focal_start_timeStamp=NULL,"UniqueFocalCode"=paste0(FocalID,"_",Date,",",FocalStart),FocalID=NULL)
+focal_data_2020
+abort_scans |> colnames()
+focal_data_2020 |> colnames()
+```
+
+
+
+```{r}
+focals <- rbind(focal_data_2018,focal_data_2019,focal_data_2020,focal_data_2021,focal_data_2022,focal_data_2023)
+focals
+focals <- rbind(focals,abort_scans) |> arrange(focal_end_timeStamp,BehaviorStart)
+focals
+focals <- mutate(focals,session_start_timeStamp=ymd_hms(session_start_timeStamp),session_end_timeStamp=ymd_hms(session_end_timeStamp),focal_end_timeStamp=ymd_hms(focal_end_timeStamp),focal_start_timeStamp=make_datetime(year=year(Date),month=month(Date),day=day(Date),hour=hour(FocalStart),min=minute(FocalStart),sec=second(FocalStart)))
+focal_sessions <- focals |> group_by(session_start_timeStamp) |> summarize(across(c(Observer,Recorder,DeviceName,Group,device_ID,layout_info_json_version,behaviors_json_version,session_end_timeStamp), ~ head(.x,1))) |> arrange(session_start_timeStamp)
+focal_sessions <- mutate(focal_sessions,"session_ID"=row_number())
+```
+
+```{r}
+focals <- left_join(focals,focal_sessions,by=c("session_start_timeStamp"="session_start_timeStamp"),suffix=c("",".y")) |> mutate(across(contains(".y"),~ NULL))
+focals |> arrange(Date)
+```
+
+
+```{r}
+focal_samples <- focals |> group_by(focal_start_timeStamp) |> summarize(across(c(focal_end_timeStamp,Type,session_ID,UniqueFocalCode), ~ head(.x,1))) |> mutate(sample_ID = row_number())
+focal_samples
+```
+```{r}
+focals <- left_join(focals,focal_samples,by=c("focal_start_timeStamp"="focal_start_timeStamp"),suffix=c("",".y")) |> mutate(across(contains(".y"),~ NULL))
+focal_observations <- focals |> select(BehaviorStart,Actor,Behavior,Recipient,BehaviorType,Involved,Against,`Start/End`,Part,comment,sample_ID,Type) |> mutate(observation_id = row_number())
+focal_observations
+```
+
+```{r}
+# successfully re-arranged tables:
+focal_sessions
+focal_samples
+focal_observations
+```
+
+```{r}
+table(focal_observations$Type)
+```
+
+
+```{r}
+# find missing values that shouldn't be
+focal_observations |> filter(is.na(Behavior))
+focal_observations |> filter(is.na(Behavior) & is.na(BehaviorStart))
+focal_sessions |> filter(if_any(everything(),is.na))
+focal_samples |> filter(if_any(everything(),is.na))
+```
+
+```{r}
+states <- focal_observations |> filter(str_detect(Behavior,"State")) |> arrange(sample_ID) |> mutate(index=row_number()) |> group_by(sample_ID) 
+states |> filter(lead(Behavior)==Behavior | lag(Behavior)==Behavior)
+```
+
+```{r}
+states
+```
+
+
+```{r}
+btwn <- function(x,y) {
+  if(is.na(x) | is.na(y)) {
+    return(NULL)
+  }
+  t1 <- filter(focal_observations,observation_id==x)$BehaviorStart |> unlist() |> as_hms()
+  t2 <- filter(focal_observations,observation_id==y)$BehaviorStart |> unlist() |> as_hms()
+  sample <- filter(focal_observations,observation_id==x)$sample_ID
+  l <- filter(focal_observations,sample_ID==sample,BehaviorStart >= t1 & BehaviorStart <= t2)
+  l
+}
+b <- Vectorize(btwn)
+short_states <- states |> filter(observation_id < 1000)
+groom_state_indices <- filter(short_states, str_detect(Behavior,"Social"))$index
+next_indices <- groom_state_indices + 1
+groom_ids <- filter(short_states,index %in% groom_state_indices)$observation_id
+next_ids <- filter(short_states,index %in% next_indices)$observation_id
+social_tbls<- b(groom_ids,next_ids)
+
+travel_state_indices <- filter(short_states, str_detect(Behavior,"Travel State"))$index
+next_indices <- travel_state_indices + 1
+travel_ids <- filter(short_states,index %in% travel_state_indices)$observation_id
+next_ids <- filter(short_states,index %in% next_indices)$observation_id
+travel_tbls<- b(travel_ids,next_ids)
+
+forage_state_indices <- filter(short_states, str_detect(Behavior,"Foraging State"))$index
+next_indices <- forage_state_indices + 1
+forage_ids <- filter(short_states,index %in% forage_state_indices)$observation_id
+next_ids <- filter(short_states,index %in% next_indices)$observation_id
+forage_tbls<- b(forage_ids,next_ids)
+
+rest_state_indices <- filter(short_states, str_detect(Behavior,"Resting State"))$index
+next_indices <- rest_state_indices + 1
+rest_ids <- filter(short_states,index %in% rest_state_indices)$observation_id
+next_ids <- filter(short_states,index %in% next_indices)$observation_id
+rest_tbls<- b(rest_ids,next_ids)
+```
+
+```{r}
+social_tbls[,3] |> as_tibble()
+travel_tbls[,4] |> as_tibble()
+forage_tbls[,3] |> as_tibble()
+rest_tbls[,1] |> as_tibble()
+```
+```{r}
+# given a list of behaviors, sort them by which state they belong to
+forage_behaviors <- c("Eat","Forage","Food Peep")
+social_behaviors <- c("Vocalize","Look at","Not look","Ignore","Aggression","Alliance","Submissive","Redirect","Contact","Groom Solicit","Groom Interest","Play Group","Sexual","Sex Solicit","Social Fur Rub","Social Weird","Lipsmack","Twitter")
+travel_behaviors <- c("Travel","Approach","Leave")
+neutral_behaviors <- c("Yawn","Scratch","Vigilant")
+handle_later <- c("Groom","Sniff","Approach","Leave")
+tally <- function(l) {
+  other <- 0
+  social <- 0
+  travel <- 0
+  forage <- 0
+  rest <- 0
+  for(x in l) {
+    
+  }
+}
+```
+
+
+```{r}
+focal_observations |> filter(Behavior=="Groom",Actor==Recipient)
+focal_observations |> filter(Behavior=="Resting State")
+```
+
+```{r}
+con <- dbConnect(Postgres(),host='localhost',port='5432',user='mionides',dbname='monkeydb')
+dbWriteTable(con,"focal_observations",focal_observations,overwrite=TRUE)
+dbWriteTable(con,"focal_sessions",focal_sessions,overwrite=TRUE)
+dbWriteTable(con,"focal_samples",focal_samples,overwrite=TRUE)
+dbDisconnect(con)
+```
+

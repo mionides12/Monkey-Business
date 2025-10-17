@@ -1,0 +1,533 @@
+---
+title: "processing"
+output: html_document
+date: "2025-06-10"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(googlesheets4)
+library(DescTools)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+individual_hist <- read_sheet('https://docs.google.com/spreadsheets/d/1yD0qlyVZj8PZvMKGiAiU3X7BwQ1dzf4cEeYAK3dyZpw/edit?gid=0#gid=08')
+group_hist_mesas <- read_sheet("https://docs.google.com/spreadsheets/d/1OOrSgPRmTzSUglg7ta_GbpYfZ-vntymuFimy_qvQt-0/edit?gid=1640087814#gid=1640087814",sheet=1)
+group_hist_palmas_a <- read_sheet("https://docs.google.com/spreadsheets/d/1OOrSgPRmTzSUglg7ta_GbpYfZ-vntymuFimy_qvQt-0/edit?gid=1791490580#gid=1791490580",sheet=2)
+group_hist_palmas_b <- read_sheet("https://docs.google.com/spreadsheets/d/1OOrSgPRmTzSUglg7ta_GbpYfZ-vntymuFimy_qvQt-0/edit?gid=621541192#gid=621541192",sheet=3)
+group_hist_tenori <- read_sheet("https://docs.google.com/spreadsheets/d/1OOrSgPRmTzSUglg7ta_GbpYfZ-vntymuFimy_qvQt-0/edit?gid=2000827641#gid=2000827641",sheet=4)
+group_hist_eskameca <- read_sheet("https://docs.google.com/spreadsheets/d/1OOrSgPRmTzSUglg7ta_GbpYfZ-vntymuFimy_qvQt-0/edit?gid=770936171#gid=770936171",sheet=5)
+group_hist_ramas <- read_sheet("https://docs.google.com/spreadsheets/d/1OOrSgPRmTzSUglg7ta_GbpYfZ-vntymuFimy_qvQt-0/edit?gid=595002932#gid=595002932",sheet=6)
+```
+
+```{r}
+colnames(individual_hist)
+```
+
+```{r}
+func <- function(x) {
+  if(!pluck((class(x) == c("POSIXct","POSIXt") | class(x) == "Date"),1)) {
+    return(NA)
+  }
+  pluck(x,1)
+}
+func2 <- Vectorize(func)
+ind <- mutate(individual_hist,"date"=as_date(as_datetime(func2(Date))),"firstdate"=as_date(as_datetime(func2(`First date`))), "lastdate"=as_date(as_datetime(func2(`Last date`))),Date=NULL,`First date`=NULL,`Last date`=NULL)
+ind
+```
+
+
+```{r}
+# checks all the data for simple problems solved below
+
+#table(individual_hist$Group)
+#table(individual_hist$`Estimated?`)
+#table(individual_hist$Mom)
+#table(individual_hist$Sex)
+#table(individual_hist$`Inf ID`)
+#table(individual_hist$ID)
+#table(individual_hist$Event)
+#table(individual_hist$`Estimation notes`)
+#table(individual_hist$`Notes`)
+#table(ind$firstdate)
+```
+
+```{r}
+# check for name typos (there aren't any in this data)
+#table(individual_hist$Name)
+```
+
+```{r}
+ind2 <- mutate(ind, "inf_id" = case_when(`Inf ID` == "Tiburon"~"TIB",`Inf ID` == "Melocoton"~"MEL",`Inf ID` == "MUS?"~"MUS",`Inf ID` == "Teq"~"TEQ",str_length(`Inf ID`)>3~NA,.default=`Inf ID`), "group"=if_else(Group=="Escameka","Eskameca",Group), "mom" = case_when(Mom=="Taboga"~"TAB",Mom=="Tesoro"~"TES",Mom=="Telula"~"TEL",Mom=="Patricia"~"PAT",Mom=="Milagro"~"MIL",Mom=="Meza"~"MEZ",Mom=="Meritamon"~"MER",Mom=="Possibly it is PAM"~"PAM",Mom=="TES?"~"TES",Mom=="TAM?"~"TAM",Mom=="Mulan"~"MUL",.default=Mom),
+               "Group"=NULL,"Inf ID"=NULL,"Mom"=NULL)
+table(ind2$mom)
+```
+
+
+
+With basic checks conducted by `table`, we can check slightly higher-level problems:
+
+```{r}
+# check for sex-changing monkeys — fix PAP, PIT and PEZ to be all male.
+ind2 |> group_by(ID) |> select(Sex) |> unique() |> filter(n()>1)
+ind2 <- mutate(ind2,Sex=case_when(ID=="PAP"~"M",ID=="PIT"~"M",ID=="PEZ"~"M",.default=Sex))
+ind2 |> group_by(ID) |> select(Sex) |> unique() |> filter(n()>1)
+
+ind2 <- group_by(ind2,ID)
+class(ind2)
+ind2
+```
+```{r}
+# remove ELE and EXB since they don't have birthdates and just don't make any sense really
+ind2 <- filter(ind2, !(ID %in% c("ELE","EXB",NA)))
+```
+
+```{r}
+# remove the first of two END dates, also observe that PED and TEQ have no start..?
+probs <- filter(ind2,table(Event)[["END"]]>1) |> filter(Event=="END") |> slice_head(n=1)
+probs
+ind2 <- anti_join(ind2,probs)
+filter(ind2,!("START" %in% names(table(Event))) || table(Event)[["START"]]>1)
+filter(ind2,table(Event)[["END"]]>1) |> filter(Event=="END") |> slice_head(n=1)
+```
+
+
+```{r}
+# sanity-check dates — quite a few problems actually, not sure how to approach
+filter(ind2, firstdate>lastdate)
+filter(ind2, firstdate>date | date > lastdate) |> View()
+```
+```{r}
+# check that moms' babies' moms' work out
+ind2 <- group_by(ind2, ID) |> mutate(mom = case_when(is.na(mom)~as.character(DescTools::Mode(mom)),TRUE~mom))
+filter(ind2, ID %in% unique(inf_id))
+ind2
+# Remove the weird rows that seem to all just be NA
+ind2 <- filter(ind2, !(ID %in% inf_id & is.na(mom)))
+unique(filter(ind2,ID %in% filter(ind2,!is.na(mom))$mom)$inf_id)
+unique(ind2$inf_id)
+setequal(unique(filter(ind2,ID %in% filter(ind2,!is.na(mom))$mom)$inf_id),unique(ind2$inf_id))
+# they're not quite the same, thanks to one case of some mother-baby confusion... but apart from that it checks.
+```
+
+```{r}
+# check for DOB and START
+ind2 |> filter(Event=="DOB" | Event=="START") |> filter(is.na(date))
+# we have two NA 
+```
+
+```{r}
+# reproductive events checks
+condates <- filter(ind2,Event=="Conception") |> select(date) |> mutate("condate"=date,date=NULL)
+dates <- mutate(condates, birthdate=condate+155)
+births <- filter(ind2,Event %in% c("Birth","DOD","First Birth","Miscarriage")) |> select(date,Event) |> mutate("eventdate"=date,"event"=Event,date=NULL,Event=NULL)
+dates <- full_join(dates,births,relationship ="many-to-many")
+good<-filter(dates,(eventdate %within% interval(condate,birthdate)))
+occur_outside <- filter(dates,!(eventdate %in% good$eventdate)) |> filter(event != "DOD") |> select(ID, eventdate,event) |> unique()
+dates2 <- group_by(dates,condate)
+conception_with_none <- filter(dates2, !any(eventdate %within% interval(condate,birthdate))) |> select(ID, condate) |> unique()
+weancount <- filter(ind2,Event %in% c("Wean/Resumes Cycling","DOD")) |> select(date,Event) |> mutate("eventdate"=date,"event"=Event,date=NULL,Event=NULL) |> summarize("weans"=n())
+concount <- summarize(condates,"cons"=n())
+weans_cons <- inner_join(concount,weancount)
+too_many_weans <- filter(weans_cons,weans>cons)
+too_many_cons <- filter(weans_cons,weans<cons)
+
+# problem things — inspect later, I suppose
+occur_outside
+conception_with_none
+too_many_weans
+
+# this can be explained by babies that have not weaned yet, but still putting it in
+too_many_cons
+```
+
+```{r}
+
+checkAges <- function(monkey) {
+  gender <- filter(ind2,ID==monkey) |> select(ID,Sex) |> head(1)
+  gender <- gender[[2]]
+  birthdate <- filter(ind2,ID==monkey & Event=="DOB") |> select(ID,`date`)
+  birthdate <- birthdate[[2]]
+  deathdate <- filter(ind2,ID==monkey & Event=="DOD") |> select(ID,`date`)
+  deathdate <- deathdate[[2]]
+  juvdate <- filter(ind2,ID==monkey & Event=="Changed to Juvenile") |> select(ID,`date`)
+  juvdate <- juvdate[[2]]
+  firstcon <- filter(ind2,ID==monkey & Event=="Conception") |> select(ID,`date`) |> head(1)
+  firstcon <- firstcon[[2]]
+  enddate <- filter(ind2,ID==monkey & Event=="END") |> select(ID,`date`)
+  enddate <- enddate[[2]]
+  if(gender == "F") {
+    subdate <- filter(ind2,ID==monkey & Event=="Changed to Subadult - female") |> select(ID,`date`)
+    adult <- filter(ind2,ID==monkey & Event=="Changed to Adult - female") |> select(ID,`date`)
+    a_low <- 2190
+    s_low <- 1642
+  }
+  else {
+    subdate <- filter(ind2,ID==monkey & Event=="Changed to Subadult - male") |>   select(ID,`date`)
+    adult <- filter(ind2,ID==monkey & Event=="Changed to Adult - male") |> select(ID,`date`)
+    a_low <- 3650
+    s_low <- 2555
+  }
+  subdate <- subdate[[2]]
+  adult <- adult[[2]]
+  if(identical(as.character(deathdate),character(0))) {
+    deathdate <- ymd("1900-01-01")
+  }
+  if(identical(as.character(juvdate),character(0))) {
+    juvdate <- ymd("1900-01-01")
+  }
+  if(identical(as.character(subdate),character(0))) {
+    subdate <- ymd("1900-01-01")
+  }
+  if(identical(as.character(adult),character(0))) {
+    adult <- ymd("1900-01-01")
+  }
+  if(identical(as.character(firstcon),character(0))) {
+    firstcon <- ymd("1900-01-01")
+  }
+  if(identical(as.character(enddate),character(0)) || is.na(enddate)) {
+    enddate <- ymd("1900-01-01")
+  }
+  result <- c(FALSE,FALSE,FALSE)
+  r <- as.numeric(juvdate - birthdate)
+  r2 <- as.numeric(subdate - birthdate)
+  r3 <- as.numeric(adult - birthdate)
+  if(between(r,546,550) | (deathdate %within% interval(birthdate,birthdate + days(550))) | (today() %within% interval(birthdate,birthdate + days(550)))) {
+    result[1] <- TRUE
+  }
+  
+  if(between(r2,s_low-2,s_low+2) | (deathdate %within% interval(birthdate,birthdate + days(s_low))) | (today() %within% interval(birthdate,birthdate + days(s_low))) | (enddate %within% interval(birthdate,birthdate + days(s_low)))) {
+    result[2] <- TRUE
+  }
+  
+  if(between(r3,a_low-2,a_low+2) | (deathdate %within% interval(birthdate,birthdate + days(a_low))) | (today() %within% interval(birthdate,birthdate + days(a_low))) | (enddate %within% interval(birthdate,birthdate + days(a_low)))) {
+    result[3] <- TRUE
+  }
+  if(firstcon %within% interval(birthdate,birthdate+days(a_low)) & between(r3,as.numeric(firstcon-days(2)),as.numeric(firstcon+days(2)))) {
+    result[3] <- TRUE
+  }
+  return(result)
+}
+#debug(checkAges)
+l<-sapply(unique(ind2$ID),checkAges)
+```
+
+```{r}
+# 113 monkeys have some sort of problem with this stuff. yikes.
+select(as_tibble(l),where(function(x) !all(x))) |> colnames()
+```
+
+```{r}
+# begin examining the next table — group life history
+grp_eskameca <- group_hist_eskameca |> mutate(Event = if_else(is.na(`Event (OLD)`),Event,`Event (OLD)`)) |> filter(!is.na(Event))
+grp_eskameca <- mutate(grp_eskameca,"date"=as_date(as_datetime(func2(Date))),"firstdate"=as_date(as_datetime(func2(`First Date`))), "lastdate"=as_date(as_datetime(func2(`Last Date`))),Date=NULL,`First Date`=NULL,`Last Date`=NULL)
+grp_eskameca
+ids <- table(ind2$ID) |> names()
+grp_eskameca$`Event ID` %in% ids
+```
+
+```{r}
+grp_ten <- group_hist_tenori |> filter(!is.na(Event))
+grp_ten <- mutate(grp_ten,"date"=as_date(as_datetime(func2(Date))),"firstdate"=as_date(as_datetime(func2(`First Date`))), "lastdate"=as_date(as_datetime(func2(`Last Date`))),Date=NULL,`First Date`=NULL,`Last Date`=NULL)
+grp_eskameca
+ids <- table(ind2$ID) |> names()
+grp_ten$`Event ID` %in% ids
+```
+```{r}
+grp_mesas <- group_hist_mesas |> filter(!is.na(Event))
+grp_mesas <- mutate(grp_mesas,"date"=as_date(as_datetime(func2(Date))),"firstdate"=as_date(as_datetime(func2(`First Date`))), "lastdate"=as_date(as_datetime(func2(`Last Date`))),Date=NULL,`First Date`=NULL,`Last Date`=NULL)
+grp_eskameca
+ids <- table(ind2$ID) |> names()
+grp_mesas$`Event ID` %in% ids
+```
+```{r}
+grp_pala <- group_hist_palmas_a |> filter(!is.na(Event))
+grp_pala <- mutate(grp_pala,"date"=as_date(as_datetime(func2(Date))),"firstdate"=as_date(as_datetime(func2(`First Date`))), "lastdate"=as_date(as_datetime(func2(`Last Date`))),Date=NULL,`First Date`=NULL,`Last Date`=NULL)
+grp_eskameca
+ids <- table(ind2$ID) |> names()
+grp_pala$`Event ID` %in% ids
+```
+```{r}
+grp_palb <- group_hist_palmas_b |> filter(!is.na(Event))
+grp_palb <- mutate(grp_palb,"date"=as_date(as_datetime(func2(Date))),"firstdate"=as_date(as_datetime(func2(`First Date`))), "lastdate"=as_date(as_datetime(func2(`Last Date`))),Date=NULL,`First Date`=NULL,`Last Date`=NULL)
+ids <- table(ind2$ID) |> names()
+grp_palb$`Event ID` %in% ids
+```
+
+```{r}
+grp_ram <- group_hist_ramas |> filter(!is.na(Event))
+grp_ram <- mutate(grp_ram,"date"=as_date(as_datetime(func2(Date))),"firstdate"=as_date(as_datetime(func2(`First Date`))), "lastdate"=as_date(as_datetime(func2(`Last Date`))),Date=NULL,`First Date`=NULL,`Last Date`=NULL)
+ids <- table(ind2$ID) |> names()
+grp_ram$`Event ID` %in% ids
+```
+
+
+```{r}
+# dates check
+filter(grp_eskameca, firstdate>lastdate)
+filter(grp_eskameca, firstdate>date | date > lastdate)
+# well... there aren't actually many first/last dates in there. So probably doesn't matter.
+```
+
+```{r}
+# dates check
+filter(grp_palb, firstdate>lastdate)
+filter(grp_palb, firstdate>date | date > lastdate)
+```
+```{r}
+# dates check
+filter(grp_ram, firstdate>lastdate)
+filter(grp_ram, firstdate>date | date > lastdate)
+```
+
+```{r}
+filter(grp_ten, firstdate>lastdate)
+filter(grp_ten, firstdate>date | date > lastdate)
+
+# two problems, but not really much to be done?
+```
+```{r}
+filter(grp_mesas, firstdate>lastdate)
+filter(grp_mesas, firstdate>date | date > lastdate)
+```
+
+```{r}
+grp_pala <- mutate(grp_pala,Order=unlist(Order))
+filter(grp_pala, firstdate>lastdate)
+filter(grp_pala, firstdate>date | date > lastdate)
+```
+
+
+```{r}
+#check baby/mom
+babymom <- ind2 |> filter(!is.na(mom)) |> select("inf"=ID,mom) |> unique() 
+babymom
+esk_babymoms <- grp_eskameca |> filter(Event=="Birth-infant") |> select("inf"=`Event ID`,"mom"=Mom)
+ten_babymoms <- grp_ten |> filter(Event=="Birth-Infant") |> select("inf"=`Event ID`,"mom"=Mom)
+pala_babymoms <- grp_pala |> filter(Event=="Birth-Infant") |> select("inf"=`Event ID`,"mom"=Mom)
+palb_babymoms <- grp_palb |> filter(Event=="Birth-Infant") |> select("inf"=`Event ID`,"mom"=Mom)
+ram_babymoms <- grp_ram |> filter(Event=="Birth-Infant") |> select("inf"=`Event ID`,"mom"=Mom)
+mesas_babymoms <- grp_mesas |> filter(Event=="Birth-Infant") |> select("inf"=`Event ID`,"mom"=Mom)
+#anti_join(esk_babymoms,babymom)
+anti_join(ten_babymoms,babymom)
+anti_join(pala_babymoms,babymom)
+anti_join(palb_babymoms,babymom)
+anti_join(ram_babymoms,babymom)
+anti_join(mesas_babymoms,babymom)
+```
+
+Now it's time for part 2: rearranging this data to make it neat.
+```{r}
+ind2
+```
+
+```{r}
+# start by adding group events to individual, assigning unique event IDs, and creating monkey table
+ind2 <- mutate(ungroup(ind2), "event_id"=row_number(),Order=NULL) |> relocate(event_id, .before =1)
+monkeys <- ind2 |> group_by(ID) |> summarize(Sex=Mode(Sex),mom=as.character(Mode(mom)),"DOB"=date[Event=="DOB"])
+monkeys
+events <- ind2 |> mutate(Sex=NULL,mom=NULL)
+events
+dates <- tibble("date"=seq(min(ind2$date,na.rm=TRUE),max(ind2$date,na.rm=TRUE),by="days"))
+dates <- left_join(dates,events) |> select(date,event_id)
+dates <- dates |> group_by(date) |> summarize(events=list(event_id))
+dates |> filter(!is.na(events))
+```
+
+
+``` {r}
+#add group info to dates
+
+grp_mesas2 <- grp_mesas
+colnames(grp_mesas2) <- paste0("mesas_", names(grp_mesas))
+dates <- left_join(dates,grp_mesas2,by=c("date"="mesas_date")) |> mutate(mesas_Order=NULL,`mesas_Group ID`=NULL,`mesas_Event ID`=NULL,mesas_Sex=NULL,mesas_Mom=NULL,mesas_Notes=NULL,"mesas_alpham"=`mesas_Alpha Male`,`mesas_Alpha Male`=NULL,"mesas_alphaf"=`mesas_Alpha Female`,`mesas_Alpha Female`=NULL,across(contains("Count"),function(x) NULL),across(contains("..."),function(x) NULL),mesas_firstdate=NULL,mesas_lastdate=NULL) |> group_by(date) |> slice_tail(n=1)
+
+grp_ten2 <- grp_ten
+colnames(grp_ten2) <- paste0("ten_", names(grp_ten))
+dates <- left_join(dates,grp_ten2,by=c("date"="ten_date")) |> mutate(ten_Order=NULL,`ten_Group ID`=NULL,`ten_Event ID`=NULL,ten_Sex=NULL,ten_Mom=NULL,ten_Notes=NULL,"ten_alpham"=`ten_Alpha Male`,`ten_Alpha Male`=NULL,"ten_alphaf"=`ten_Alpha Female`,`ten_Alpha Female`=NULL,across(contains("Count"),function(x) NULL),across(contains("..."),function(x) NULL),ten_firstdate=NULL,ten_lastdate=NULL) |> group_by(date) |> slice_tail(n=1)
+
+grp_ramas2 <- grp_ram
+colnames(grp_ramas2) <- paste0("ramas_", names(grp_ram))
+dates <- left_join(dates,grp_ramas2,by=c("date"="ramas_date")) |> mutate(ramas_Order=NULL,`ramas_Group ID`=NULL,`ramas_Event ID`=NULL,ramas_Sex=NULL,ramas_Mom=NULL,ramas_Notes=NULL,"ramas_alpham"=`ramas_Alpha Male`,`ramas_Alpha Male`=NULL,"ramas_alphaf"=`ramas_Alpha Female`,`ramas_Alpha Female`=NULL,across(contains("Count"),function(x) NULL),across(contains("..."),function(x) NULL),ramas_firstdate=NULL,ramas_lastdate=NULL) |> group_by(date) |> slice_tail(n=1)
+
+grp_pala2 <- grp_pala
+colnames(grp_pala2) <- paste0("pala_", names(grp_pala))
+dates <- left_join(dates,grp_pala2,by=c("date"="pala_date")) |> mutate(pala_Order=NULL,`pala_Group ID`=NULL,`pala_Event ID`=NULL,pala_Sex=NULL,pala_Mom=NULL,pala_Notes=NULL,"pala_alpham"=`pala_Alpha Male`,`pala_Alpha Male`=NULL,"pala_alphaf"=`pala_Alpha Female`,`pala_Alpha Female`=NULL,across(contains("Count"),function(x) NULL),across(contains("..."),function(x) NULL),pala_firstdate=NULL,pala_lastdate=NULL) |> group_by(date) |> slice_tail(n=1)
+
+grp_palb2 <- grp_palb
+colnames(grp_palb2) <- paste0("palb_", names(grp_palb))
+dates <- left_join(dates,grp_palb2,by=c("date"="palb_date")) |> mutate(palb_Order=NULL,`palb_Group ID`=NULL,`palb_Event ID`=NULL,palb_Sex=NULL,palb_Mom=NULL,palb_Notes=NULL,"palb_alpham"=`palb_Alpha Male`,`palb_Alpha Male`=NULL,"palb_alphaf"=`palb_Alpha Female`,`palb_Alpha Female`=NULL,across(contains("Count"),function(x) NULL),across(contains("..."),function(x) NULL),palb_firstdate=NULL,palb_lastdate=NULL) |> group_by(date) |> slice_tail(n=1)
+
+grp_eskameca2 <- grp_eskameca
+colnames(grp_eskameca2) <- paste0("eskameca_", names(grp_eskameca))
+dates <- left_join(dates,grp_eskameca2,by=c("date"="eskameca_date")) |> mutate(eskameca_Order=NULL,`eskameca_Group ID`=NULL,`eskameca_Event ID`=NULL,eskameca_Sex=NULL,eskameca_Mom=NULL,eskameca_Notes=NULL,"eskameca_alpham"=`eskameca_Alpha Male`,`eskameca_Alpha Male`=NULL,"eskameca_alphaf"=`eskameca_Alpha Female`,`eskameca_Alpha Female`=NULL,across(contains("Count"),function(x) NULL),across(contains("..."),function(x) NULL),eskameca_firstdate=NULL,eskameca_lastdate=NULL) |> group_by(date) |> slice_tail(n=1)
+
+dates <- ungroup(dates)
+```
+
+```{r}
+twoGuys_mes <- function(v) {
+  w <- dates$mesas_Event
+  bigGuy <- w[1]
+  friend <- v[1]
+  for(i in 1:length(w)) {
+    if(!is.na(w[i])) {
+      bigGuy <- w[i]
+      friend <- v[i]
+    }
+    else {
+      v[i] <- friend
+    }
+  }
+  v
+}
+twoGuys_palb <- function(v) {
+  w <- dates$palb_Event
+  bigGuy <- w[1]
+  friend <- v[1]
+  for(i in 1:length(w)) {
+    if(!is.na(w[i])) {
+      bigGuy <- w[i]
+      friend <- v[i]
+    }
+    else {
+      v[i] <- friend
+    }
+  }
+  v
+}
+twoGuys_pala <- function(v) {
+  w <- dates$pala_Event
+  bigGuy <- w[1]
+  friend <- v[1]
+  for(i in 1:length(w)) {
+    if(!is.na(w[i])) {
+      bigGuy <- w[i]
+      friend <- v[i]
+    }
+    else {
+      v[i] <- friend
+    }
+  }
+  v
+}
+twoGuys_ten <- function(v) {
+  w <- dates$ten_Event
+  bigGuy <- w[1]
+  friend <- v[1]
+  for(i in 1:length(w)) {
+    if(!is.na(w[i])) {
+      bigGuy <- w[i]
+      friend <- v[i]
+    }
+    else {
+      v[i] <- friend
+    }
+  }
+  v
+}
+twoGuys_ram <- function(v) {
+  w <- dates$ramas_Event
+  bigGuy <- w[1]
+  friend <- v[1]
+  for(i in 1:length(w)) {
+    if(!is.na(w[i])) {
+      bigGuy <- w[i]
+      friend <- v[i]
+    }
+    else {
+      v[i] <- friend
+    }
+  }
+  v
+}
+twoGuys_esk <- function(v) {
+  w <- dates$eskameca_Event
+  bigGuy <- w[1]
+  friend <- v[1]
+  for(i in 1:length(w)) {
+    if(!is.na(w[i])) {
+      bigGuy <- w[i]
+      friend <- v[i]
+    }
+    else {
+      v[i] <- friend
+    }
+  }
+  v
+}
+dates <- mutate(dates, across(contains("mesas_"),twoGuys_mes))
+dates <- mutate(dates, across(contains("ramas_"),twoGuys_ram))
+dates <- mutate(dates, across(contains("ten_"),twoGuys_ten))
+dates <- mutate(dates, across(contains("pala_"),twoGuys_pala))
+dates <- mutate(dates, across(contains("palb_"),twoGuys_palb))
+dates <- mutate(dates, across(contains("eskameca_"),twoGuys_esk))
+```
+
+```{r}
+dates <- mutate(dates,across(contains("Event",ignore.case=FALSE),function(x) NULL))
+```
+
+```{r}
+# drop that events column that we worked so hard on... unsure about this decision for now
+dates <- mutate(dates,events=NULL)
+dates <- dates %>% filter(if_any(contains("_"), ~ !is.na(.)))
+```
+
+```{r}
+# and we are victorious!
+
+dates
+monkeys
+events
+```
+
+```{r}
+# time to start looking at database-ifying the stuff
+
+library(RSQLite)
+library(RPostgres)
+library(DBI)
+
+
+# storage method 1: file contained in Rstudio project
+db <- dbConnect(SQLite(),"monkey_data.db")
+dbWriteTable(db,"monkeys",monkeys,overwrite=TRUE)
+dbWriteTable(db,"dates",dates,overwrite=TRUE)
+dbWriteTable(db,"events",events,overwrite=TRUE)
+```
+
+```{r}
+dbDisconnect(db)
+```
+
+```{r}
+# storage method 2: database hosted on my computer
+con <- dbConnect(Postgres(),host='localhost',port='5432',user='mionides',dbname='monkeydb')
+dbWriteTable(con,"monkeys",monkeys,overwrite=TRUE)
+dbWriteTable(con,"dates",dates,overwrite=TRUE)
+dbWriteTable(con,"events",events,overwrite=TRUE)
+```
+
+```{r}
+dbDisconnect(con)
+```
+
+
+```{r}
+# these values used explicitly in 'script.rmd', instead of drawing from database, because it seemed easier
+min(dates$date)
+max(dates$date)
+min(events$date,na.rm=TRUE)
+max(events$date,na.rm=TRUE)
+min(events$event_id)
+max(events$event_id)
+```
+

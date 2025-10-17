@@ -1,0 +1,66 @@
+---
+title: "focal_scans"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+```
+
+```{r}
+files <- list.files(path="tbls/",pattern = "*Focal Scan Data*.csv",full.names=TRUE)
+files
+focal_scan_2018 <- files[1] |> read_csv()
+focal_scan_2019 <- files[2] |> read_csv()
+focal_scan_2020 <- files[3] |> read_csv()
+focal_scan_2021 <- files[4] |> read_csv()
+focal_scan_2022 <- files[5] |> read_csv()
+focal_scan_2023 <- files[6] |> read_csv()
+focal_scan_2018 <- mutate(focal_scan_2018,Group="T")
+focal_scans <- bind_rows(focal_scan_2018,focal_scan_2019,focal_scan_2020,focal_scan_2021,focal_scan_2022,focal_scan_2023)
+focal_scans
+```
+
+```{r}
+files <- list.files(path="tbls/",pattern = "*Group Scan Data*.csv",full.names=TRUE)
+files
+grp_scan_2018 <- files[1] |> read_csv()
+grp_scan_2019 <- files[2] |> read_csv()
+grp_scan_2020 <- files[3] |> read_csv()
+grp_scan_2021 <- files[4] |> read_csv()
+grp_scan_2022 <- files[5] |> read_csv()
+grp_scan_2023 <- files[6] |> read_csv()
+grp_scan_2018 <- mutate(grp_scan_2018,Group="T")
+grp_scans <- bind_rows(grp_scan_2018,grp_scan_2019,grp_scan_2020,grp_scan_2021,grp_scan_2022,grp_scan_2023)
+grp_scans
+```
+
+```{r}
+files <- list.files(path="tbls/",pattern = "*Abort Scan*.csv",full.names=TRUE)
+files
+abort_scan_2019 <- files[1] |> read_csv()
+abort_scan_2020 <- files[2] |> read_csv()
+abort_scan_2021 <- files[3] |> read_csv()
+abort_scan_2022 <- files[4] |> read_csv()
+abort_scan_2023 <- files[5] |> read_csv()
+abort_scan_2019 <- mutate(abort_scan_2019,Group="T")
+abort_scan_2020 <- mutate(abort_scan_2018,Group="T")
+abort_scans <- bind_rows(abort_scan_2019,abort_scan_2020,abort_scan_2021,abort_scan_2022,abort_scan_2023)
+abort_scans
+table(abort_scans$PlantPart)
+table(abort_scans$FocalID)
+```
+
+```{r}
+colnames(abort_scans)
+colnames(focal_scans)
+rbind(abort_scans,focal_scans) |> arrange(focal_end_timeStamp,ScanStart)
+```
+```{r}
+# proceed with grp and focal since abort data is weird
+
+grp_scans <- mutate(grp_scans,distance = sqrt(x_position**2 + y_position**2))
+focal_scans <- mutate(focal_scans, distance = sqrt(x_position**2 + y_position**2))
+```
+

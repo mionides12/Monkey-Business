@@ -1,0 +1,182 @@
+---
+title: "processing"
+output: html_document
+date: "2025-06-10"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(googlesheets4)
+library(DescTools)
+library(RSQLite)
+library(DBI)
+library(shiny)
+library(shinyjs)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r}
+
+converter <- function(input_data){
+  df_ <- input_data
+  if("date" %in% names(df_)) {
+  df_$date <- as.character(as_date(df_$date))
+  }
+  if("firstdate" %in% names(df_)) {
+    df_$firstdate <- as.character(as_date(df_$firstdate))
+    df_$lastdate <- as.character(as_date(df_$lastdate))
+  }
+  if("DOB" %in% names(df_)) {
+    df_$DOB <- as.character(as_date(df_$DOB))
+  }
+  
+  return(df_)
+}
+
+colnames <- fetch(dbSendQuery(mydb, "SELECT * FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'dates'"))
+
+# Define UI for application that draws a histogram
+ui = fluidPage(
+    shinyjs::useShinyjs(),
+    selectInput(inputId = "query_choice",
+              label = h3("Select an option"),
+              choices = c("Monkeys table" = "monkeys", "Dates table" = "dates", "Events table" = "events")
+    ),
+    textInput("filter", label = "hopefully you don't see this", value = "MEZ"),
+    textInput("event_monkey_ids", label = "Enter a monkey ID or list of monkey IDs (e.g. ABC,DEF,GHI)", value = "MEZ"),
+    dateRangeInput("dates", label="Select a date range",start="2018-01-01",end="2019-01-01",max="2026-06-30",min="1988-01-24"),
+    checkboxGroupInput("grps", label = "Select groups to view", 
+    choices = list("Mesas" = "mes", "Eskameca" = "esk", "Tenori" = "ten","Palmas A" = "pala","Palmas B"="palb","Ramas"="ram"),
+    selected = 1),
+    checkboxGroupInput("events_cols", label = "Select columns to filter by", 
+    choices = list("Event id" = "event_id", "Monkey" = "ID", "Date" = "date"),
+    selected = 1),
+    fluidRow(
+        column(12,
+               tableOutput('table'),
+               textOutput('query')
+               )
+        )
+    )
+
+server = function(input, output,session) {
+    observeEvent(input$query_choice, {
+      q <- input$query_choice
+      if(q == "monkeys") {
+        shinyjs::show("filter")
+        shinyjs::hide("dates")
+        shinyjs::hide("grps")
+        shinyjs::hide("event_monkey_ids")
+        shinyjs::hide("events_cols")
+        updateTextInput(session, "filter", label = "Enter a monkey ID or list of monkey IDs (e.g. ABC,DEF,GHI)")
+      }
+      else if(q == "dates") {
+        updateDateRangeInput(session,"dates",start="2018-01-01",end="2019-01-01how")
+        shinyjs::show("dates")
+        shinyjs::show("grps")
+        shinyjs::hide("filter")
+        shinyjs::hide("event_monkey_ids")
+        shinyjs::hide("events_cols")
+      }
+      else if(q == "events") {
+        shinyjs::hide("grps")
+        shinyjs::hide("filter")
+        shinyjs::show("events_cols")
+        shinyjs::hide("dates")
+      }
+    })
+    observeEvent(input$events_cols, {
+        if("event_id" %in% input$events_cols) {
+          updateTextInput(session, "filter", label = "Enter an event ID or list of event IDs (e.g. 45,123,6)",value = "Enter text...")
+          shinyjs::show("filter")
+        }
+        else {
+          shinyjs::hide("filter")
+          updateTextInput(session, "filter",value = "Enter text...")
+        }
+        if("date" %in% input$events_cols) {
+          shinyjs::show("dates")
+        }
+        else {
+          shinyjs::hide("dates")
+          updateDateRangeInput(session,"dates",start="2017-07-29",end="2026-06-30")
+        }
+        if("ID" %in% input$events_cols) {
+          shinyjs::show("event_monkey_ids")
+        }
+        else {
+          shinyjs::hide("event_monkey_ids")
+          updateTextInput(session, "event_monkey_ids",value = "Enter text...")
+        }
+    })
+    Record = reactive({
+      mydb = dbConnect(SQLite(), "monkey_data.db")
+      q <- input$query_choice
+      f <- input$filter
+      d <- input$dates
+      m <- input$event_monkey_ids
+      sql_query <- " "
+      if(q == "monkeys") {
+        l <- unlist(strsplit(f,split=","))
+        if(any(str_length(l)!=3)) {
+          sql_query <- paste0("SELECT * FROM monkeys")
+          tbl <- fetch(dbSendQuery(mydb, sql_query))
+        }
+        else {
+          sql_query <- paste0("SELECT * FROM monkeys WHERE ID IN ('",paste(l, collapse = "', '"),"')")
+          tbl <- fetch(dbSendQuery(mydb, sql_query))
+        }
+      }
+      else if(q == "events") {
+        l2 <- unlist(strsplit(f,split=","))
+        l <- unlist(strsplit(m,split=","))
+        sql_query <- "SELECT * FROM events"
+        if(all(str_length(l)==3)) {
+          sql_query <- paste0(sql_query, " WHERE ID IN ('",paste(l, collapse = "', '"),"')")
+          if(all(as.numeric(l2) %in% 1:1558)) {
+            sql_query <- paste0(sql_query, " AND event_id IN (",paste(l2, collapse = ", "),")")
+          }
+          sql_query <- paste0(sql_query, " AND ((date >= ", as.numeric(d[1])," AND date <= ", as.numeric(d[2]),")")
+        }
+        else if(all(as.numeric(l2) %in% 1:1558)) {
+          sql_query <- paste0(sql_query, " WHERE event_id IN (",paste(l2, collapse = ", "),")")
+          sql_query <- paste0(sql_query, " AND ((date >= ", as.numeric(d[1])," AND date <= ", as.numeric(d[2]),")")
+        }
+        else {
+          sql_query <- paste0(sql_query, " WHERE ((date >= ", as.numeric(d[1])," AND date <= ", as.numeric(d[2]),")")
+        }
+        if(!("date" %in% input$events_cols)) {
+          sql_query <- paste0(sql_query, " OR date IS NULL)")
+        }
+        else {
+          sql_query <- paste0(sql_query, ")")
+        }
+        tbl <- fetch(dbSendQuery(mydb, sql_query))
+      }
+      else if(q == "dates") {
+        if(length(input$grps)==0) {
+          sql_query <- paste0("SELECT * FROM dates WHERE date >= ", as.numeric(d[1])," AND date <= ", as.numeric(d[2]))
+        }
+        else {
+          sql_query <- "SELECT "
+          
+        }
+        tbl <- fetch(dbSendQuery(mydb, sql_query))
+      }
+      converter(tbl)})
+      #sql_query})
+    #output$query <- renderText(Record())
+    output$table <- renderTable(Record())
+}
+
+shinyApp(ui = ui, server = server)
+```
+
+
+
